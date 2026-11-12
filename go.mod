@@ -1,0 +1,3 @@
+module gomelsec
+
+go 1.27.4
