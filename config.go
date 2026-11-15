@@ -22,6 +22,14 @@ const (
 	FrameType4E FrameType = "4E" // シリアル番号付き拡張フレーム
 )
 
+// CommunicationFormat は通信データのエンコード形式（バイナリ / ASCII）です。
+type CommunicationFormat string
+
+const (
+	FormatBinary CommunicationFormat = "binary" // バイナリ通信モード (推奨)
+	FormatASCII  CommunicationFormat = "ascii"  // ASCIIコード通信モード
+)
+
 // PLCSeries は対象とするPLCのシリーズ種別です。
 type PLCSeries string
 
@@ -64,6 +72,7 @@ type Config struct {
 	Port      int
 	Transport TransportType
 	Frame     FrameType
+	Format    CommunicationFormat // 通信形式 (FormatBinary / FormatASCII)
 	PLCSeries PLCSeries
 
 	// ロギング設定 (運用・障害診断用)
@@ -107,6 +116,7 @@ func DefaultConfig(host string, port int) Config {
 		Port:                     port,
 		Transport:                TransportTCP,
 		Frame:                    FrameType3E,
+		Format:                   FormatBinary,
 		PLCSeries:                PLCSeriesQ,
 		ConnectTimeout:           3 * time.Second,
 		Timeout:                  2 * time.Second,
