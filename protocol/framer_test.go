@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/binary"
 	"gomelsec/device"
+	"strings"
 	"testing"
 )
 
@@ -19,8 +20,8 @@ func TestFramer3E_BatchRead(t *testing.T) {
 	}
 
 	// パケット検証:
-	// サブヘッダ: 0x5000 (リトルエンディアン: 0x00, 0x50)
-	if packet[0] != 0x00 || packet[1] != 0x50 {
+	// サブヘッダ: 0x5000 (ビッグエンディアン: 0x50, 0x00)
+	if packet[0] != 0x50 || packet[1] != 0x00 {
 		t.Errorf("expected subheader 0x5000, got %02X %02X", packet[0], packet[1])
 	}
 
@@ -31,9 +32,9 @@ func TestFramer3E_BatchRead(t *testing.T) {
 	}
 
 	// レスポンスパースのテスト (正常応答)
-	// レスポンス: [0x00, 0xD0] (0xD000), NW(0), PC(FF), Unit(FF 03), Station(0), DataLen(2+4=6), EndCode(0x0000), Data(12 34 56 78)
+	// レスポンス: [0xD0, 0x00] (0xD000), NW(0), PC(FF), Unit(FF 03), Station(0), DataLen(2+4=6), EndCode(0x0000), Data(12 34 56 78)
 	resp := []byte{
-		0x00, 0xD0, // サブヘッダ 0xD000
+		0xD0, 0x00, // サブヘッダ 0xD000
 		0x00,       // NW
 		0xFF,       // PC
 		0xFF, 0x03, // Unit
@@ -84,7 +85,7 @@ func TestFramer4E_Serial(t *testing.T) {
 	}
 
 	// 4Eサブヘッダ検証 (0x5400)
-	if req1[0] != 0x00 || req1[1] != 0x54 {
+	if req1[0] != 0x54 || req1[1] != 0x00 {
 		t.Errorf("expected 4E subheader 0x5400, got %02X %02X", req1[0], req1[1])
 	}
 
@@ -96,7 +97,7 @@ func TestFramer4E_Serial(t *testing.T) {
 
 	// 4E レスポンスパース (一致するシリアル)
 	resp := []byte{
-		0x00, 0xD4, // サブヘッダ 0xD400
+		0xD4, 0x00, // サブヘッダ 0xD400
 		byte(serial1 & 0xFF), byte(serial1 >> 8), // シリアル番号
 		0x00, 0x00, // 予約
 		0x00, 0xFF, 0xFF, 0x03, 0x00, // NW/PC/Unit/Station
@@ -133,17 +134,18 @@ func TestFramer1E_BatchRead(t *testing.T) {
 	if packet[0] != SubHeader1EWordRead {
 		t.Errorf("expected 1E word read subheader 0x01, got 0x%02X", packet[0])
 	}
-	// デバイスコード = 'D' (0x44)
-	if packet[8] != 0x44 {
-		t.Errorf("expected device code 0x44, got 0x%02X", packet[8])
+	// デバイスコード = 'D ' (0x44, 0x20)
+	if packet[8] != 0x44 || packet[9] != 0x20 {
+		t.Errorf("expected device code 'D ', got %02X %02X", packet[8], packet[9])
 	}
-	// 点数 = 5
-	if packet[9] != 5 {
-		t.Errorf("expected count 5, got %d", packet[9])
+	// 点数 = 5 (uint16 LE)
+	count := binary.LittleEndian.Uint16(packet[10:12])
+	if count != 5 {
+		t.Errorf("expected count 5, got %d", count)
 	}
 
-	// レスポンスパース (0x80 + データ)
-	respOK := []byte{0x80, 0x11, 0x22, 0x33, 0x44}
+	// レスポンスパース (サブヘッダ 0x80 + 完了コード 0x00 + データ)
+	respOK := []byte{0x80, 0x00, 0x11, 0x22, 0x33, 0x44}
 	payload, err := framer.ParseResponse(packet, respOK)
 	if err != nil {
 		t.Fatalf("unexpected parse error: %v", err)
@@ -157,5 +159,50 @@ func TestFramer1E_BatchRead(t *testing.T) {
 	_, err = framer.ParseResponse(packet, respErr)
 	if err == nil {
 		t.Errorf("expected error, got nil")
+	}
+}
+
+func TestFramer3EAscii_BatchRead(t *testing.T) {
+	framer := NewFramer3EAscii(DefaultHeader3EConfig())
+	dev, err := device.ParseDevice("D100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	packet, err := framer.BuildBatchRead(dev, 2, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reqStr := string(packet)
+	// サブヘッダ検証 ("5000")
+	if !strings.HasPrefix(reqStr, "5000") {
+		t.Errorf("expected prefix 5000, got %s", reqStr[:4])
+	}
+	// コマンド "0401", サブコマンド "0000" を含むこと
+	if !strings.Contains(reqStr, "04010000") {
+		t.Errorf("expected command 04010000 in %s", reqStr)
+	}
+	// デバイス "D*0001000002" を含むこと
+	if !strings.Contains(reqStr, "D*0001000002") {
+		t.Errorf("expected D*0001000002 in %s", reqStr)
+	}
+
+	// 正常レスポンスパースのテスト
+	// "D000" + NW(00) + PC(FF) + Unit(03FF) + DataLen(000C) + EndCode(0000) + D100(1234) + D101(5678)
+	respASCII := []byte("D00000FF03FF000C000012345678")
+	payload, err := framer.ParseResponse(packet, respASCII)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	// バイナリバイト列として2ワード(4バイト: 0x34 0x12 0x78 0x56)が得られること
+	if len(payload) != 4 {
+		t.Fatalf("expected payload 4 bytes, got %d", len(payload))
+	}
+	w0 := binary.LittleEndian.Uint16(payload[0:2])
+	w1 := binary.LittleEndian.Uint16(payload[2:4])
+	if w0 != 0x1234 || w1 != 0x5678 {
+		t.Errorf("expected w0=0x1234, w1=0x5678, got w0=0x%04X, w1=0x%04X", w0, w1)
 	}
 }

@@ -187,7 +187,7 @@ func (s *mockPLCServer) handleConn(conn net.Conn) {
 		// 3E 正常レスポンスパケット構築
 		respLen := uint16(2 + len(respPayload)) // EndCode(2B) + Payload
 		resp := make([]byte, 11+len(respPayload))
-		binary.LittleEndian.PutUint16(resp[0:2], 0xD000)
+		binary.BigEndian.PutUint16(resp[0:2], 0xD000)
 		resp[2] = req[2] // NW
 		resp[3] = req[3] // PC
 		binary.LittleEndian.PutUint16(resp[4:6], binary.LittleEndian.Uint16(req[4:6]))
@@ -345,5 +345,211 @@ func TestClientEndToEnd(t *testing.T) {
 	}
 	if len(randDwords) != 1 || randDwords[0] != uint32(targetInt32) {
 		t.Fatalf("unexpected randDwords: %v", randDwords)
+	}
+}
+
+
+// mockPLCServer1E は 1E フレーム (A互換/FX) の簡易インメモリPLCサーバーです。
+type mockPLCServer1E struct {
+	listener net.Listener
+	dMemory  [1000]uint16
+	mMemory  [1000]bool
+	stopped  bool
+}
+
+func startMockPLCServer1E(t *testing.T) *mockPLCServer1E {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start mock 1E plc: %v", err)
+	}
+
+	server := &mockPLCServer1E{listener: l}
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go server.handleConn(conn)
+		}
+	}()
+
+	return server
+}
+
+func (s *mockPLCServer1E) handleConn(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 1024)
+
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF && !s.stopped {
+				// closed
+			}
+			return
+		}
+
+		req := buf[:n]
+		if len(req) < 12 {
+			continue
+		}
+
+		subHeader := req[0]
+		addr := int(binary.LittleEndian.Uint32(req[4:8]))
+		code := req[8]
+		count := int(binary.LittleEndian.Uint16(req[10:12]))
+
+		switch subHeader {
+		case 0x01: // ワード読出し
+			if code == 0x44 { // 'D'
+				resp := make([]byte, 2+count*2)
+				resp[0] = 0x81
+				resp[1] = 0x00 // 完了コード (0x00=正常)
+				for i := 0; i < count; i++ {
+					target := addr + i
+					if target < len(s.dMemory) {
+						val := s.dMemory[target]
+						binary.LittleEndian.PutUint16(resp[2+i*2:2+i*2+2], val)
+					}
+				}
+				_, _ = conn.Write(resp)
+			}
+		case 0x03: // ワード書込み
+			if code == 0x44 {
+				data := req[12:]
+				for i := 0; i < count; i++ {
+					target := addr + i
+					if target < len(s.dMemory) && i*2+2 <= len(data) {
+						s.dMemory[target] = binary.LittleEndian.Uint16(data[i*2 : i*2+2])
+					}
+				}
+				_, _ = conn.Write([]byte{0x83, 0x00})
+			}
+		case 0x00: // ビット読出し
+			if code == 0x4D { // 'M'
+				byteLen := (count + 1) / 2
+				resp := make([]byte, 2+byteLen)
+				resp[0] = 0x80
+				resp[1] = 0x00 // 完了コード
+				for i := 0; i < count; i++ {
+					target := addr + i
+					if target < len(s.mMemory) && s.mMemory[target] {
+						byteIdx := 2 + (i / 2)
+						if i%2 == 0 {
+							resp[byteIdx] |= 0x10
+						} else {
+							resp[byteIdx] |= 0x01
+						}
+					}
+				}
+				_, _ = conn.Write(resp)
+			}
+		case 0x02: // ビット書込み
+			if code == 0x4D {
+				payload := req[12:]
+				for i := 0; i < count; i++ {
+					target := addr + i
+					byteIdx := i / 2
+					if target < len(s.mMemory) && byteIdx < len(payload) {
+						if i%2 == 0 {
+							s.mMemory[target] = (payload[byteIdx] & 0x10) != 0
+						} else {
+							s.mMemory[target] = (payload[byteIdx] & 0x01) != 0
+						}
+					}
+				}
+				_, _ = conn.Write([]byte{0x82, 0x00})
+			}
+		}
+	}
+}
+
+func (s *mockPLCServer1E) Close() {
+	s.stopped = true
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+}
+
+func TestClientEndToEnd_1E(t *testing.T) {
+	server := startMockPLCServer1E(t)
+	defer server.Close()
+
+	// D0~D4 に 0~4 を事前設定
+	for i := 0; i <= 4; i++ {
+		server.dMemory[i] = uint16(i)
+	}
+
+	addr := server.listener.Addr().(*net.TCPAddr)
+	client, err := NewFX3UClient("127.0.0.1", addr.Port)
+	if err != nil {
+		t.Fatalf("failed to create 1E client: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// 1. Connect
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	if !client.IsConnected() {
+		t.Fatalf("expected IsConnected = true")
+	}
+
+	// 2. Ping (1Eでは監視デバイス D0 の読み出し)
+	if err := client.Ping(ctx); err != nil {
+		t.Fatalf("Ping failed: %v", err)
+	}
+
+	// 3. D0~D4 一括読み出し (期待値: 0, 1, 2, 3, 4)
+	words, err := client.BatchReadWords(ctx, "D0", 5)
+	if err != nil {
+		t.Fatalf("BatchReadWords failed: %v", err)
+	}
+	if len(words) != 5 {
+		t.Fatalf("expected 5 words, got %d", len(words))
+	}
+	for i := 0; i <= 4; i++ {
+		if words[i] != uint16(i) {
+			t.Errorf("expected D%d = %d, got %d", i, i, words[i])
+		}
+	}
+
+	// 4. 単一ワード読み出し
+	for i := 0; i <= 4; i++ {
+		val, err := client.ReadWord(ctx, fmt.Sprintf("D%d", i))
+		if err != nil {
+			t.Fatalf("ReadWord failed: %v", err)
+		}
+		if val != uint16(i) {
+			t.Errorf("expected D%d = %d, got %d", i, i, val)
+		}
+	}
+
+	// 5. ワード書き込み & 読み出し確認
+	if err := client.WriteWord(ctx, "D10", 9999); err != nil {
+		t.Fatalf("WriteWord failed: %v", err)
+	}
+	wVal, err := client.ReadWord(ctx, "D10")
+	if err != nil {
+		t.Fatalf("ReadWord D10 failed: %v", err)
+	}
+	if wVal != 9999 {
+		t.Errorf("expected 9999, got %d", wVal)
+	}
+
+	// 6. ビット書き込み & 読み出し確認
+	if err := client.WriteBit(ctx, "M0", true); err != nil {
+		t.Fatalf("WriteBit M0 failed: %v", err)
+	}
+	bVal, err := client.ReadBit(ctx, "M0")
+	if err != nil {
+		t.Fatalf("ReadBit M0 failed: %v", err)
+	}
+	if !bVal {
+		t.Errorf("expected M0 = true, got false")
 	}
 }

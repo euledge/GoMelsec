@@ -129,17 +129,21 @@ func NewClient(cfg Config) (Client, error) {
 	}
 
 	var framer protocol.Framer
-	switch cfg.Frame {
-	case FrameType1E:
-		h1eCfg := protocol.Header1EConfig{
-			PCNumber: cfg.PCNumber,
-			Timer:    cfg.CPUTimer,
+	if cfg.Format == FormatASCII {
+		framer = protocol.NewFramer3EAscii(h3eCfg)
+	} else {
+		switch cfg.Frame {
+		case FrameType1E:
+			h1eCfg := protocol.Header1EConfig{
+				PCNumber: cfg.PCNumber,
+				Timer:    cfg.CPUTimer,
+			}
+			framer = protocol.NewFramer1E(h1eCfg)
+		case FrameType4E:
+			framer = protocol.NewFramer4E(h3eCfg)
+		default: // FrameType3E
+			framer = protocol.NewFramer3E(h3eCfg)
 		}
-		framer = protocol.NewFramer1E(h1eCfg)
-	case FrameType4E:
-		framer = protocol.NewFramer4E(h3eCfg)
-	default: // FrameType3E
-		framer = protocol.NewFramer3E(h3eCfg)
 	}
 
 	logger := cfg.Logger

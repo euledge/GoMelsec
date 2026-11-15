@@ -37,7 +37,7 @@ func (f *Framer4E) convertTo4E(packet3E []byte) []byte {
 	serial := f.nextSerial()
 	packet4E := make([]byte, len(packet3E)+4)
 
-	binary.LittleEndian.PutUint16(packet4E[0:2], SubHeader4ERequest)
+	binary.BigEndian.PutUint16(packet4E[0:2], SubHeader4ERequest)
 	binary.LittleEndian.PutUint16(packet4E[2:4], serial)
 	binary.LittleEndian.PutUint16(packet4E[4:6], 0x0000) // 予約
 
@@ -108,7 +108,7 @@ func (f *Framer4E) ParseResponse(reqBytes, respBytes []byte) ([]byte, error) {
 		return nil, ErrResponseTooShort
 	}
 
-	actualSubHeader := binary.LittleEndian.Uint16(respBytes[0:2])
+	actualSubHeader := binary.BigEndian.Uint16(respBytes[0:2])
 	if actualSubHeader != SubHeader4EResponse {
 		return nil, fmt.Errorf("%w: expected 0xD400, got 0x%04X", ErrInvalidSubHeader, actualSubHeader)
 	}

@@ -42,19 +42,15 @@ func (f *Framer1E) BuildBatchRead(dev device.Device, count uint16, isBit bool) (
 		subHeader = SubHeader1EBitRead
 	}
 
-	// 1E読出リクエスト長: サブヘッダ(1B) + PC番号(1B) + タイマ(2B) + アドレス(4B) + デバイスコード(1B) + 点数(1B) = 10バイト
-	packet := make([]byte, 10)
+	// 1E読出リクエスト長: サブヘッダ(1B) + PC番号(1B) + タイマ(2B) + アドレス(4B) + デバイスコード(2B) + 点数(2B) = 12バイト
+	packet := make([]byte, 12)
 	packet[0] = subHeader
 	packet[1] = f.cfg.PCNumber
 	binary.LittleEndian.PutUint16(packet[2:4], f.cfg.Timer)
 	binary.LittleEndian.PutUint32(packet[4:8], dev.Number)
 	packet[8] = code
-	// 点数: 256点の場合は0x00、それ以外は下位1バイト
-	if count == 256 {
-		packet[9] = 0x00
-	} else {
-		packet[9] = byte(count & 0xFF)
-	}
+	packet[9] = 0x20 // スペース (標準 1E 2バイトコード "D ", "M " 等)
+	binary.LittleEndian.PutUint16(packet[10:12], count)
 
 	return packet, nil
 }
@@ -66,29 +62,30 @@ func (f *Framer1E) BuildBatchWrite(dev device.Device, data []byte, isBit bool) (
 	}
 
 	subHeader := SubHeader1EWordWrite
-	var count byte
+	var count uint16
 	var payload []byte
 
 	if isBit {
 		subHeader = SubHeader1EBitWrite
 		// ビット書込み時は各ビットをニブル詰め (1バイト2ビット)
 		nibbles := packBitsToNibbles(data)
-		count = byte(len(data) & 0xFF)
+		count = uint16(len(data))
 		payload = nibbles
 	} else {
-		count = byte((len(data) / 2) & 0xFF)
+		count = uint16(len(data) / 2)
 		payload = data
 	}
 
-	totalLen := 10 + len(payload)
+	totalLen := 12 + len(payload)
 	packet := make([]byte, totalLen)
 	packet[0] = subHeader
 	packet[1] = f.cfg.PCNumber
 	binary.LittleEndian.PutUint16(packet[2:4], f.cfg.Timer)
 	binary.LittleEndian.PutUint32(packet[4:8], dev.Number)
 	packet[8] = code
-	packet[9] = count
-	copy(packet[10:], payload)
+	packet[9] = 0x20
+	binary.LittleEndian.PutUint16(packet[10:12], count)
+	copy(packet[12:], payload)
 
 	return packet, nil
 }
@@ -146,26 +143,37 @@ func (f *Framer1E) BuildRawCommand(command uint16, subCommand uint16, reqData []
 }
 
 func (f *Framer1E) ParseResponse(reqBytes, respBytes []byte) ([]byte, error) {
-	// 1Eフレーム レスポンス最小長 = 2バイト (サブヘッダ + 完了コードまたはデータ)
-	if len(respBytes) < 1 {
+	// 1Eフレーム レスポンス最小長 = 2バイト (サブヘッダ + 完了コード)
+	if len(respBytes) < 2 {
+		if len(respBytes) == 1 && respBytes[0] == SubHeader1EResponseErr {
+			return nil, fmt.Errorf("%w: 1E error response", ErrPLCErrorResponse)
+		}
 		return nil, ErrResponseTooShort
 	}
 
 	subHeader := respBytes[0]
+	endCode := respBytes[1]
+
 	if subHeader == SubHeader1EResponseErr {
 		// 異常終了: 0x5B の後にエラーコード(1バイト)
-		if len(respBytes) >= 2 {
-			errCode := respBytes[1]
-			return nil, fmt.Errorf("%w: 1E error code 0x%02X", ErrPLCErrorResponse, errCode)
-		}
-		return nil, fmt.Errorf("%w: 1E error response", ErrPLCErrorResponse)
+		return nil, fmt.Errorf("%w: 1E error code 0x%02X", ErrPLCErrorResponse, endCode)
 	}
 
-	if subHeader != SubHeader1EResponseOK {
-		return nil, fmt.Errorf("%w: expected 0x80, got 0x%02X", ErrInvalidSubHeader, subHeader)
+	expectedSubHeader := SubHeader1EResponseOK
+	if len(reqBytes) > 0 {
+		expectedSubHeader = reqBytes[0] | 0x80
 	}
 
-	// 正常終了: サブヘッダ 0x80 の直後以降がデータ部
-	payload := respBytes[1:]
+	if subHeader != expectedSubHeader && subHeader != SubHeader1EResponseOK {
+		return nil, fmt.Errorf("%w: expected 0x%02X, got 0x%02X", ErrInvalidSubHeader, expectedSubHeader, subHeader)
+	}
+
+	// 完了コードのチェック (0x00以外は異常終了)
+	if endCode != 0x00 {
+		return nil, fmt.Errorf("%w: 1E error code 0x%02X", ErrPLCErrorResponse, endCode)
+	}
+
+	// 正常終了: サブヘッダ(1B) + 完了コード(1B: 0x00) の直後以降がデータ部
+	payload := respBytes[2:]
 	return payload, nil
 }

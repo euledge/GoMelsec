@@ -45,8 +45,8 @@ func (f *Framer3E) buildPacket(cmd, subCmd uint16, payload []byte) []byte {
 	totalLen := 2 + 1 + 1 + 2 + 1 + 2 + int(reqDataLen)
 	packet := make([]byte, totalLen)
 
-	// サブヘッダ (0x5000)
-	binary.LittleEndian.PutUint16(packet[0:2], SubHeader3ERequest)
+	// サブヘッダ (0x5000: 先頭が0x50, 次が0x00)
+	binary.BigEndian.PutUint16(packet[0:2], SubHeader3ERequest)
 	// ルーティング部
 	packet[2] = f.cfg.NetworkNumber
 	packet[3] = f.cfg.PCNumber
@@ -256,7 +256,7 @@ func (f *Framer3E) ParseResponse(reqBytes, respBytes []byte) ([]byte, error) {
 		return nil, ErrResponseTooShort
 	}
 
-	actualSubHeader := binary.LittleEndian.Uint16(respBytes[0:2])
+	actualSubHeader := binary.BigEndian.Uint16(respBytes[0:2])
 	if actualSubHeader != SubHeader3EResponse {
 		return nil, fmt.Errorf("%w: expected 0xD000, got 0x%04X", ErrInvalidSubHeader, actualSubHeader)
 	}

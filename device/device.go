@@ -145,3 +145,59 @@ func (d Device) BinaryCode1E() (byte, error) {
 		return 0x00, fmt.Errorf("%w: %s in 1E frame", ErrUnsupportedDevice, d.Name)
 	}
 }
+
+// AsciiCode3E は 3E/4E フレーム（ASCIIコード通信モード）で使用する2文字のデバイスコードを返します。
+func (d Device) AsciiCode3E() (string, error) {
+	switch d.Type {
+	case DevD:
+		return "D*", nil
+	case DevM:
+		return "M*", nil
+	case DevSM:
+		return "SM", nil
+	case DevSD:
+		return "SD", nil
+	case DevX:
+		return "X*", nil
+	case DevY:
+		return "Y*", nil
+	case DevL:
+		return "L*", nil
+	case DevF:
+		return "F*", nil
+	case DevV:
+		return "V*", nil
+	case DevB:
+		return "B*", nil
+	case DevW:
+		return "W*", nil
+	case DevS:
+		return "S*", nil
+	case DevTS:
+		return "TS", nil
+	case DevTC:
+		return "TC", nil
+	case DevTN:
+		return "TN", nil
+	case DevCS:
+		return "CS", nil
+	case DevCC:
+		return "CC", nil
+	case DevCN:
+		return "CN", nil
+	case DevSB:
+		return "SB", nil
+	case DevSW:
+		return "SW", nil
+	case DevDX:
+		return "DX", nil
+	case DevDY:
+		return "DY", nil
+	case DevZR:
+		return "ZR", nil
+	case DevR:
+		return "R*", nil
+	default:
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedDevice, d.Name)
+	}
+}
